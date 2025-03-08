@@ -237,6 +237,8 @@ impl TcpSocket {
     }
 
     pub fn start_connect(&mut self, remote_address: SocketAddr) -> SocketResult<()> {
+        println!("Hey I am from monitor");
+
         match self.tcp_state {
             TcpState::Default(..) | TcpState::Bound(..) => {}
 
