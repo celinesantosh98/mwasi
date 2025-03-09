@@ -20,6 +20,19 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use tokio::sync::Mutex;
+use wasmtime::{Engine, Store, Config};
+use wasmtime::component::{ Linker, Component, Func};
+use wasmtime::component::*;
+// use crate::WasiCtx;
+//use crate::ResourceTable;
+// use crate::WasiView;
+// use crate::WasiCtxBuilder;
+// use crate::WasiImpl;
+use crate::{WasiCtx, ResourceTable, WasiView, IoView, WasiCtxBuilder};
+use anyhow::{Context};
+use crate::TrappableError;
+
+//use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView, ResourceTable};
 
 /// Value taken from rust std library.
 const DEFAULT_BACKLOG: u32 = 128;
@@ -64,6 +77,22 @@ enum TcpState {
     },
 
     Closed,
+}
+
+struct MyState {
+    ctx: WasiCtx,
+    table: ResourceTable,
+    
+}
+
+impl IoView for MyState {
+    fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+}
+
+impl WasiView for MyState {
+    fn ctx(&mut self) -> &mut WasiCtx { &mut self.ctx }
+    //fn table(&mut self) -> &mut ResourceTable { &mut self.table }
+    
 }
 
 impl std::fmt::Debug for TcpState {
@@ -237,7 +266,43 @@ impl TcpSocket {
     }
 
     pub fn start_connect(&mut self, remote_address: SocketAddr) -> SocketResult<()> {
-        println!("Hey I am from monitor");
+        //println!("Hey I am from monitor");
+        
+        let mut config = Config::new();
+        config.wasm_component_model(true);
+        config.async_support(false);
+        
+        let engine = Engine::new(&config).map_err(|e| TrappableError::trap(e))?;
+        let mut linker = Linker::<MyState>::new(&engine);
+        crate::add_to_linker_sync(&mut linker).map_err(|e| TrappableError::trap(e))?;
+
+        let wasi_ctx = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .inherit_env()
+        .inherit_network()
+        .allow_ip_name_lookup(true)
+        .allow_tcp(true)
+        .allow_udp(true)
+        .build();
+
+        let state = MyState {
+                            ctx: wasi_ctx,
+                            table: ResourceTable::new(),
+                        };
+
+        let mut STORE = Store::new(&engine, state);
+        let monitor_component = Component::from_file(&engine, "/Users/celinesantosh/Desktop/sem_5/secure_closed_source_app/monitor/monitor.wasm")
+        .map_err(|e| TrappableError::trap(e))?;
+        //.context("Failed to load monitor component")?;
+
+        let monitor_instance = linker.instantiate( &mut STORE, &monitor_component).map_err(|e| TrappableError::trap(e))?;
+        let func= monitor_instance.get_func( &mut STORE, "printmonitormessage").unwrap();
+
+        //func.call(&mut STORE, &[], &mut []);
+
+        tokio::task::block_in_place( move || {
+            func.call(&mut STORE, &[], &mut []).unwrap();
+        });
 
         match self.tcp_state {
             TcpState::Default(..) | TcpState::Bound(..) => {}
